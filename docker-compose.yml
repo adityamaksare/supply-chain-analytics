@@ -1,0 +1,142 @@
+# version: '3.8'
+
+services:
+  # Zookeeper - Required for Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - supply-chain-network
+
+  # Kafka Broker
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - supply-chain-network
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    container_name: supply_chain_postgres
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: supplychain
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-scripts/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - supply-chain-network
+
+  # MongoDB Database
+  mongodb:
+    image: mongo:7.0
+    container_name: supply_chain_mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin123
+      MONGO_INITDB_DATABASE: supplychain
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - supply-chain-network
+
+  producer:
+    build:
+      context: ./producer
+      dockerfile: Dockerfile
+    container_name: data_producer
+    depends_on:
+      - kafka
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: shipments
+      CSV_PATH: /app/data/DataCoSupplyChainDataset.csv
+    volumes:
+      - ./data:/app/data
+    networks:
+      - supply-chain-network
+    restart: on-failure
+
+  # # PySpark Processor - Consumes from Kafka and processes
+  spark-processor:
+    build:
+      context: ./spark-processor
+      dockerfile: Dockerfile
+    container_name: spark_processor
+    depends_on:
+      - kafka
+      - postgres
+      - mongodb
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: shipments
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: supplychain
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      MONGO_HOST: mongodb
+      MONGO_PORT: 27017
+      MONGO_DB: supplychain
+      MONGO_USER: admin
+      MONGO_PASSWORD: admin123
+    networks:
+      - supply-chain-network
+    restart: on-failure
+
+  # # Flask API - REST endpoints for dashboard
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: flask_api
+    depends_on:
+      - postgres
+      - mongodb
+    ports:
+      - "5001:5000"
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: supplychain
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      MONGO_HOST: mongodb
+      MONGO_PORT: 27017
+      MONGO_DB: supplychain
+      MONGO_USER: admin
+      MONGO_PASSWORD: admin123
+    networks:
+      - supply-chain-network
+    restart: on-failure
+
+networks:
+  supply-chain-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  mongodb_data:
